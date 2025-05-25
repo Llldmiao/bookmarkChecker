@@ -1,0 +1,29 @@
+{
+  "manifest_version": 3,
+  "name": "书签检查器",
+  "version": "1.0",
+  "description": "一个优雅的书签健康检查工具，帮助您清理无效和重复的书签",
+  "author": "Your Name",
+  "action": {
+    "default_icon": {
+      "16": "images/bookmark.png",
+      "48": "images/bookmark.png",
+      "128": "images/bookmark.png"
+    }
+  },
+  "permissions": [
+    "bookmarks",
+    "<all_urls>",
+    "webNavigation",
+    "tabs",
+    "webRequest"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "icons": {
+    "16": "images/bookmark.png",
+    "48": "images/bookmark.png",
+    "128": "images/bookmark.png"
+  }
+}
