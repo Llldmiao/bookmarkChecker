@@ -31,6 +31,8 @@ document.addEventListener('DOMContentLoaded', function() {
       console.log('书签树原始数据:', JSON.parse(JSON.stringify(bookmarkTreeNodes)));
       const results = document.getElementById('result');
       await analyzeBookmarks(bookmarkTreeNodes);
+      console.log('书签树分析结果:', results.innerHTML);
+      results.innerHTML = results.innerHTML || '<p>未发现问题书签</p>';
     });
   });
 });
@@ -64,6 +66,11 @@ try {
     let ignoredBookmarks = 0;
     let processedBookmarks = 0;
 
+    // DOM缓存
+    const resultDiv = document.getElementById('result');
+    const checkBtn = document.getElementById('checkBtn');
+    const abortBtn = document.getElementById('abortBtn');
+
     // 添加实时状态显示
     output += `
       <div class="stats">
@@ -74,9 +81,40 @@ try {
         <p>📈 检查进度: <span id="progress">0%</span></p>
       </div>
     `;
-    document.getElementById('result').innerHTML = output;
+    resultDiv.innerHTML = output;
 
-    // 更新状态显示的函数
+    // 新增：动态渲染待确认URL列表
+    function renderUnverifiedList() {
+      let html = '';
+      if (invalidUrls.length > 0) {
+        html += `
+          <div class="unverified-list">
+            <h4>🔄 待确认链接列表</h4>
+            <p class="tip">点击链接可以手动验证其可访问性</p>
+            <div class="url-list">
+              ${invalidUrls.map(item => `
+                <div class="url-item">
+                  <div class="url-title">${escapeHtml(item.title)}</div>
+                  <a href="${escapeHtml(item.url)}" target="_blank" class="url-link">
+                    ${escapeHtml(item.url)}
+                  </a>
+                  <div class="url-error" style="color:#f44336">${escapeHtml(item.error)}</div>
+                </div>
+              `).join('')}
+            </div>
+          </div>
+        `;
+      }
+      let container = document.getElementById('unverified-list-container');
+      if (!container) {
+        container = document.createElement('div');
+        container.id = 'unverified-list-container';
+        resultDiv.appendChild(container);
+      }
+      container.innerHTML = html;
+    }
+
+    // 修复：将updateStats提前
     function updateStats() {
       const stats = document.querySelector('.stats');
       if (stats) {
@@ -89,6 +127,8 @@ try {
           <p>📈 检查进度: <span id="progress">${progress}%</span></p>
         `;
       }
+      // 新增：每次状态更新时刷新待确认列表
+      renderUnverifiedList();
     }
 
     // 并发控制器（最大10个并发）
@@ -96,7 +136,6 @@ try {
       const queue = [];
       let activeCount = 0;
       let abortController = new AbortController();
-      let isPaused = false;
 
       const pause = () => {
         isPaused = true;
@@ -165,12 +204,10 @@ try {
       if (node.url) {
         totalBookmarks++;
         updateStats(); // 更新总书签数
-        
         // 跨层级重复检测
         const count = urlMap.get(node.url) || 0;
         urlMap.set(node.url, count + 1);
         if (count > 0) duplicates.add(node.url);
-
         // 协议检测
         if (!node.url.startsWith('http:') && !node.url.startsWith('https:')) {
           ignoredBookmarks++;
@@ -179,14 +216,12 @@ try {
           ignoredUrls.push({ title: node.title, url: node.url });
           return;
         }
-
         // 网络请求验证
         try {
           await run(async () => {
             const timeoutPromise = new Promise((_, reject) => {
               setTimeout(() => reject(new Error('请求超时（5秒）')), 5000);
             });
-
             try {
               const response = await Promise.race([
                 new Promise((resolve) => {
@@ -203,7 +238,6 @@ try {
                 }),
                 timeoutPromise
               ]);
-
               if (response.status >= 200 && response.status < 400) {
                 verifiedBookmarks++;
                 processedBookmarks++; // 新增：更新已处理数
@@ -236,7 +270,8 @@ try {
       await Promise.all(node.children?.map(scan) || []);
     }
 
-    nodes.forEach(scan);
+    // await所有scan
+    await Promise.all(nodes.map(scan));
     console.log('重复链接:', Array.from(duplicates));
     if (duplicates.size > 0) {
       output += `<p>发现重复书签：${Array.from(duplicates).map(url => escapeHtml(url)).join(', ')}</p>`;
@@ -246,7 +281,7 @@ try {
       invalidUrls.forEach(item => {
         output += `<li>${escapeHtml(item.title)} - ${escapeHtml(item.url)} 
           ${item.status ? `状态码: ${escapeHtml(String(item.status))}` : ''}
-          ${item.error ? `错误: ${escapeHtml(item.error)}` : ''}
+          ${item.error ? `错误: <span style='color:#f44336'>${escapeHtml(item.error)}</span>` : ''}
         </li>`;
       });
       output += `</ul>`;
@@ -282,7 +317,7 @@ try {
                 <a href="${escapeHtml(item.url)}" target="_blank" class="url-link">
                   ${escapeHtml(item.url)}
                 </a>
-                <div class="url-error">${escapeHtml(item.error)}</div>
+                <div class="url-error" style="color:#f44336">${escapeHtml(item.error)}</div>
               </div>
             `).join('')}
           </div>
@@ -345,8 +380,8 @@ try {
     // 更新检查完成状态
     showLoading(false);
     updateLoadingStatus('✨ 检查完成！');
-    document.getElementById('checkBtn').disabled = false;
-    document.getElementById('abortBtn').disabled = true; // 检查完成后禁用暂停按钮
+    checkBtn.disabled = false;
+    abortBtn.disabled = true; // 检查完成后禁用暂停按钮
 
     return output || '<p>未发现问题书签</p>';
   } catch (error) {
@@ -355,7 +390,8 @@ try {
     updateLoadingStatus('❌ 检查出错');
     document.getElementById('checkBtn').disabled = false;
     document.getElementById('abortBtn').disabled = true; // 检查出错时禁用暂停按钮
-    return `<p class="error">😞 分析过程出现错误: ${escapeHtml(error.message)}</p>`;
+    // 错误信息美化
+    return `<p class="error">😞 分析过程出现错误: <span style='color:#f44336'>${escapeHtml(error.message)}</span></p>`;
   }
 }
 
