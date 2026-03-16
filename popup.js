@@ -39,7 +39,8 @@ document.addEventListener('DOMContentLoaded', function() {
 
 // 添加HTML转义函数
 function escapeHtml(unsafe) {
-  return unsafe
+  const value = String(unsafe ?? '');
+  return value
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
@@ -58,11 +59,17 @@ try {
     let output = '<h3>📊 书签健康报告</h3>';
     const urlMap = new Map();
     const invalidUrls = [];
+    const invalidUrlById = new Map();
     const duplicates = new Set();
     const ignoredUrls = [];
+    const sectionCollapsed = {
+      pending: false,
+      confirmed: true
+    };
     let totalBookmarks = 0;
     let verifiedBookmarks = 0;
     let unverifiedBookmarks = 0;
+    let confirmedBadBookmarks = 0;
     let ignoredBookmarks = 0;
     let processedBookmarks = 0;
 
@@ -77,6 +84,7 @@ try {
         <p>📖 总书签: <strong>${totalBookmarks}</strong></p>
         <p>✅ 已验证: <span style="color:#7BB662">${verifiedBookmarks}</span></p>
         <p>🟡 待确认: <span style="color:#F1C40F">${unverifiedBookmarks}</span></p>
+        <p>❌ 已确认失效: <span style="color:#E74C3C">${confirmedBadBookmarks}</span></p>
         <p>⚪ 已忽略: <span style="color:#95A5A6">${ignoredBookmarks}</span></p>
         <p>📈 检查进度: <span id="progress">0%</span></p>
       </div>
@@ -86,22 +94,73 @@ try {
     // 新增：动态渲染待确认URL列表
     function renderUnverifiedList() {
       let html = '';
-      if (invalidUrls.length > 0) {
+      const pending = invalidUrls.filter(item => item.state === 'unverified');
+      const confirmedBad = invalidUrls.filter(item => item.state === 'confirmed_bad');
+      if (pending.length > 0 || confirmedBad.length > 0) {
+        const pendingSectionClass = sectionCollapsed.pending ? 'collapsed' : '';
+        const confirmedSectionClass = sectionCollapsed.confirmed ? 'collapsed' : '';
         html += `
           <div class="unverified-list">
             <h4>🔄 待确认链接列表</h4>
             <p class="tip">点击链接可以手动验证其可访问性</p>
-            <div class="url-list">
-              ${invalidUrls.map(item => `
-                <div class="url-item">
-                  <div class="url-title">${escapeHtml(item.title)}</div>
-                  <a href="${escapeHtml(item.url)}" target="_blank" class="url-link">
-                    ${escapeHtml(item.url)}
-                  </a>
-                  <div class="url-error" style="color:#f44336">${escapeHtml(item.error)}</div>
+            ${pending.length > 0 ? `
+              <div class="url-section ${pendingSectionClass}">
+                <button
+                  class="section-toggle"
+                  data-action="toggle-section"
+                  data-section="pending"
+                  aria-expanded="${String(!sectionCollapsed.pending)}"
+                >
+                  <span>待确认 (${pending.length})</span>
+                  <span class="toggle-icon">▾</span>
+                </button>
+                <div class="url-list">
+                  ${pending.map(item => `
+                    <div class="url-item">
+                      <div class="url-title">${escapeHtml(item.title)}</div>
+                      <a href="${escapeHtml(item.url)}" target="_blank" class="url-link">
+                        ${escapeHtml(item.url)}
+                      </a>
+                      ${item.error ? `<div class="url-error">${escapeHtml(item.error)}</div>` : ''}
+                      <div class="url-actions">
+                        <button class="mini-btn" data-action="confirm-good" data-id="${escapeHtml(item.id)}">确认可访问</button>
+                        <button class="mini-btn danger" data-action="confirm-bad" data-id="${escapeHtml(item.id)}">确认失效</button>
+                      </div>
+                    </div>
+                  `).join('')}
                 </div>
-              `).join('')}
-            </div>
+              </div>
+            ` : ''}
+            ${confirmedBad.length > 0 ? `
+              <div class="url-section ${confirmedSectionClass}">
+                <div class="url-section-title">
+                  <button
+                    class="section-toggle"
+                    data-action="toggle-section"
+                    data-section="confirmed"
+                    aria-expanded="${String(!sectionCollapsed.confirmed)}"
+                  >
+                    <span>已确认失效 (${confirmedBad.length})</span>
+                    <span class="toggle-icon">▾</span>
+                  </button>
+                  <button class="mini-btn danger" data-action="delete-all-bad">删除全部失效</button>
+                </div>
+                <div class="url-list">
+                  ${confirmedBad.map(item => `
+                    <div class="url-item">
+                      <div class="url-title">${escapeHtml(item.title)}</div>
+                      <a href="${escapeHtml(item.url)}" target="_blank" class="url-link">
+                        ${escapeHtml(item.url)}
+                      </a>
+                      <div class="url-badge bad">已确认失效</div>
+                      <div class="url-actions">
+                        <button class="mini-btn danger" data-action="delete" data-id="${escapeHtml(item.id)}">删除书签</button>
+                      </div>
+                    </div>
+                  `).join('')}
+                </div>
+              </div>
+            ` : ''}
           </div>
         `;
       }
@@ -114,6 +173,92 @@ try {
       container.innerHTML = html;
     }
 
+    const updateCountsForStateChange = (item, nextState) => {
+      const prevState = item.state;
+      if (prevState === nextState) return;
+      if (prevState === 'unverified') unverifiedBookmarks--;
+      if (prevState === 'confirmed_bad') confirmedBadBookmarks--;
+      if (prevState === 'confirmed_good') verifiedBookmarks--;
+      if (nextState === 'unverified') unverifiedBookmarks++;
+      if (nextState === 'confirmed_bad') confirmedBadBookmarks++;
+      if (nextState === 'confirmed_good') verifiedBookmarks++;
+      item.state = nextState;
+    };
+
+    const removeInvalidItem = (itemId) => {
+      const index = invalidUrls.findIndex(item => item.id === itemId);
+      if (index === -1) return;
+      const item = invalidUrls[index];
+      updateCountsForStateChange(item, 'removed');
+      invalidUrls.splice(index, 1);
+      invalidUrlById.delete(itemId);
+    };
+
+    const removeInvalidItemSilently = (itemId) => {
+      const index = invalidUrls.findIndex(item => item.id === itemId);
+      if (index === -1) return;
+      invalidUrls.splice(index, 1);
+      invalidUrlById.delete(itemId);
+    };
+
+    // 事件委托处理按钮行为
+    resultDiv.onclick = async (event) => {
+      const button = event.target.closest('button[data-action]');
+      if (!button) return;
+      const action = button.dataset.action;
+      const itemId = button.dataset.id;
+      const section = button.dataset.section;
+
+      if (action === 'toggle-section') {
+        if (!section || !(section in sectionCollapsed)) return;
+        sectionCollapsed[section] = !sectionCollapsed[section];
+        renderUnverifiedList();
+        return;
+      }
+
+      if (action === 'confirm-good' || action === 'confirm-bad') {
+        const item = invalidUrlById.get(itemId);
+        if (!item) return;
+        if (action === 'confirm-good') {
+          updateCountsForStateChange(item, 'confirmed_good');
+          removeInvalidItemSilently(itemId);
+        } else {
+          updateCountsForStateChange(item, 'confirmed_bad');
+        }
+        updateStats();
+        return;
+      }
+
+      if (action === 'delete') {
+        const item = invalidUrlById.get(itemId);
+        if (!item) return;
+        chrome.bookmarks.remove(itemId, () => {
+          if (chrome.runtime.lastError) {
+            console.error('删除书签失败:', chrome.runtime.lastError.message);
+            return;
+          }
+          totalBookmarks--;
+          removeInvalidItem(itemId);
+          updateStats();
+        });
+        return;
+      }
+
+      if (action === 'delete-all-bad') {
+        const toDelete = invalidUrls.filter(item => item.state === 'confirmed_bad');
+        if (toDelete.length === 0) return;
+        Promise.all(toDelete.map(item => new Promise((resolve) => {
+          chrome.bookmarks.remove(item.id, () => {
+            resolve();
+          });
+        }))).then(() => {
+          totalBookmarks -= toDelete.length;
+          toDelete.forEach(item => removeInvalidItem(item.id));
+          updateStats();
+        });
+      }
+    };
+
     // 修复：将updateStats提前
     function updateStats() {
       const stats = document.querySelector('.stats');
@@ -123,6 +268,7 @@ try {
           <p>📖 总书签: <strong>${totalBookmarks}</strong></p>
           <p>✅ 已验证: <span style="color:#7BB662">${verifiedBookmarks}</span></p>
           <p>🟡 待确认: <span style="color:#F1C40F">${unverifiedBookmarks}</span></p>
+          <p>❌ 已确认失效: <span style="color:#E74C3C">${confirmedBadBookmarks}</span></p>
           <p>⚪ 已忽略: <span style="color:#95A5A6">${ignoredBookmarks}</span></p>
           <p>📈 检查进度: <span id="progress">${progress}%</span></p>
         `;
@@ -230,15 +376,15 @@ try {
                     url: node.url
                   }, (result) => {
                     if (chrome.runtime.lastError) {
-                      resolve({ status: 500, error: chrome.runtime.lastError.message });
+                      resolve({ ok: false, status: 0, error: chrome.runtime.lastError.message });
                     } else {
-                      resolve(result);
+                      resolve(result || { ok: false, status: 0, error: '未知错误' });
                     }
                   });
                 }),
                 timeoutPromise
               ]);
-              if (response.status >= 200 && response.status < 400) {
+              if (response.ok) {
                 verifiedBookmarks++;
                 processedBookmarks++; // 新增：更新已处理数
                 updateStats(); // 更新已验证数
@@ -249,22 +395,30 @@ try {
               unverifiedBookmarks++;
               processedBookmarks++; // 新增：更新已处理数
               updateStats(); // 更新待确认数
-              invalidUrls.push({
+              const item = {
+                id: node.id,
                 title: node.title,
                 url: node.url,
-                error: error.message
-              });
+                error: error.message,
+                state: 'unverified'
+              };
+              invalidUrls.push(item);
+              invalidUrlById.set(node.id, item);
             }
           });
         } catch (error) {
           unverifiedBookmarks++;
           processedBookmarks++; // 新增：更新已处理数
           updateStats(); // 更新待确认数
-          invalidUrls.push({
+          const item = {
+            id: node.id,
             title: node.title,
             url: node.url,
-            error: error.message
-          });
+            error: error.message,
+            state: 'unverified'
+          };
+          invalidUrls.push(item);
+          invalidUrlById.set(node.id, item);
         }
       }
       await Promise.all(node.children?.map(scan) || []);
@@ -276,21 +430,12 @@ try {
     if (duplicates.size > 0) {
       output += `<p>发现重复书签：${Array.from(duplicates).map(url => escapeHtml(url)).join(', ')}</p>`;
     }
-    if (invalidUrls.length > 0) {
-      output += `<p>发现无效链接：</p><ul>`;
-      invalidUrls.forEach(item => {
-        output += `<li>${escapeHtml(item.title)} - ${escapeHtml(item.url)} 
-          ${item.status ? `状态码: ${escapeHtml(String(item.status))}` : ''}
-          ${item.error ? `错误: <span style='color:#f44336'>${escapeHtml(item.error)}</span>` : ''}
-        </li>`;
-      });
-      output += `</ul>`;
-    }
     output += `
       <div class="stats">
         <p>📖 总书签: <strong>${totalBookmarks}</strong></p>
         <p>✅ 已验证: <span style="color:#7BB662">${verifiedBookmarks}</span></p>
         <p>🟡 待确认: <span style="color:#F1C40F">${unverifiedBookmarks}</span></p>
+        <p>❌ 已确认失效: <span style="color:#E74C3C">${confirmedBadBookmarks}</span></p>
         <p>⚪ 已忽略: <span style="color:#95A5A6">${ignoredBookmarks}</span></p>
         <p>📈 检查进度: <span id="progress">100%</span></p>
       </div>
@@ -304,78 +449,12 @@ try {
       output += `</ul>`;
     }
 
-    // 添加待确认URL列表
-    if (invalidUrls.length > 0) {
-      output += `
-        <div class="unverified-list">
-          <h4>🔄 待确认链接列表</h4>
-          <p class="tip">点击链接可以手动验证其可访问性</p>
-          <div class="url-list">
-            ${invalidUrls.map(item => `
-              <div class="url-item">
-                <div class="url-title">${escapeHtml(item.title)}</div>
-                <a href="${escapeHtml(item.url)}" target="_blank" class="url-link">
-                  ${escapeHtml(item.url)}
-                </a>
-                <div class="url-error" style="color:#f44336">${escapeHtml(item.error)}</div>
-              </div>
-            `).join('')}
-          </div>
-        </div>
-        <style>
-          .unverified-list {
-            margin-top: 20px;
-            padding: 15px;
-            background: #f8f9fa;
-            border-radius: 8px;
-          }
-          .tip {
-            color: #666;
-            font-size: 0.9em;
-            margin: 5px 0 15px;
-          }
-          .url-list {
-            max-height: 300px;
-            overflow-y: auto;
-            border: 1px solid #ddd;
-            border-radius: 4px;
-            padding: 10px;
-          }
-          .url-item {
-            padding: 10px;
-            border-bottom: 1px solid #eee;
-          }
-          .url-item:last-child {
-            border-bottom: none;
-          }
-          .url-title {
-            font-weight: bold;
-            margin-bottom: 5px;
-          }
-          .url-link {
-            color: #2196F3;
-            text-decoration: none;
-            word-break: break-all;
-            display: block;
-            margin: 5px 0;
-          }
-          .url-link:hover {
-            text-decoration: underline;
-          }
-          .url-error {
-            color: #f44336;
-            font-size: 0.9em;
-            margin-top: 5px;
-          }
-        </style>
-      `;
-    }
+    resultDiv.innerHTML = output;
+    renderUnverifiedList();
 
     // 清理数据
     urlMap.clear();
     duplicates.clear();
-    invalidUrls.length = 0;
-    ignoredUrls.length = 0;
 
     // 更新检查完成状态
     showLoading(false);
